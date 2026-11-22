@@ -1,0 +1,195 @@
+diff --git a/sam3/model/decoder.py b/sam3/model/decoder.py
+index dfd1cae..7bff571 100644
+--- a/sam3/model/decoder.py
++++ b/sam3/model/decoder.py
+@@ -12,6 +12,8 @@ from typing import Any, Dict, List, Optional, Union
+ 
+ import numpy as np
+ import torch
++
++from sam3._device import default_device
+ import torch.nn.functional as torchF
+ from sam3.sam.rope import apply_rotary_enc, apply_rotary_enc_real, compute_axial_cis
+ from sam3.sam.transformer import RoPEAttention
+@@ -300,7 +302,7 @@ class TransformerDecoder(nn.Module):
+             if resolution is not None and stride is not None:
+                 feat_size = resolution // stride
+                 coords_h, coords_w = self._get_coords(
+-                    feat_size, feat_size, device="cuda"
++                    feat_size, feat_size, device=default_device()
+                 )
+                 self.compilable_cord_cache = (coords_h, coords_w)
+                 self.compilable_stored_size = (feat_size, feat_size)
+diff --git a/sam3/model/position_encoding.py b/sam3/model/position_encoding.py
+index f38c62b..8558f44 100644
+--- a/sam3/model/position_encoding.py
++++ b/sam3/model/position_encoding.py
+@@ -6,6 +6,8 @@ import math
+ from typing import Optional
+ 
+ import torch
++
++from sam3._device import default_device
+ from torch import nn
+ 
+ 
+@@ -52,7 +54,7 @@ class PositionEmbeddingSine(nn.Module):
+                 (precompute_resolution // 32, precompute_resolution // 32),
+             ]
+             for size in precompute_sizes:
+-                tensors = torch.zeros((1, 1) + size, device="cuda")
++                tensors = torch.zeros((1, 1) + size, device=default_device())
+                 self.forward(tensors)
+                 # further clone and detach it in the cache (just to be safe)
+                 self.cache[size] = self.cache[size].clone().detach()
+diff --git a/sam3/model/sam3_image_processor.py b/sam3/model/sam3_image_processor.py
+index f8439f5..7cabfe4 100644
+--- a/sam3/model/sam3_image_processor.py
++++ b/sam3/model/sam3_image_processor.py
+@@ -6,6 +6,8 @@ from typing import Dict, List
+ import numpy as np
+ import PIL
+ import torch
++
++from sam3._device import default_device
+ from sam3.model import box_ops
+ from sam3.model.data_misc import FindStage, interpolate
+ from torchvision.transforms import v2
+@@ -14,10 +16,10 @@ from torchvision.transforms import v2
+ class Sam3Processor:
+     """ """
+ 
+-    def __init__(self, model, resolution=1008, device="cuda", confidence_threshold=0.5):
++    def __init__(self, model, resolution=1008, device=None, confidence_threshold=0.5):
+         self.model = model
+         self.resolution = resolution
+-        self.device = device
++        self.device = device if device is not None else default_device()
+         self.transform = v2.Compose(
+             [
+                 v2.ToDtype(torch.uint8, scale=True),
+@@ -29,8 +31,8 @@ class Sam3Processor:
+         self.confidence_threshold = confidence_threshold
+ 
+         self.find_stage = FindStage(
+-            img_ids=torch.tensor([0], device=device, dtype=torch.long),
+-            text_ids=torch.tensor([0], device=device, dtype=torch.long),
++            img_ids=torch.tensor([0], device=self.device, dtype=torch.long),
++            text_ids=torch.tensor([0], device=self.device, dtype=torch.long),
+             input_boxes=None,
+             input_boxes_mask=None,
+             input_boxes_label=None,
+diff --git a/sam3/model/sam3_tracker_utils.py b/sam3/model/sam3_tracker_utils.py
+index 7b6047e..583d211 100644
+--- a/sam3/model/sam3_tracker_utils.py
++++ b/sam3/model/sam3_tracker_utils.py
+@@ -6,7 +6,22 @@ import numpy as np
+ import torch
+ import torch.nn.functional as F
+ from numpy.typing import NDArray
+-from sam3.model.edt import edt_triton
++try:
++    from sam3.model.edt import edt_triton as _edt_triton_kernel
++except ImportError:  # triton unavailable (e.g. macOS / CPU-only)
++    _edt_triton_kernel = None
++
++
++def edt_triton(data):
++    """EDT with Triton on CUDA, falling back to OpenCV elsewhere (macOS/MPS/CPU)."""
++    if _edt_triton_kernel is not None and data.is_cuda:
++        return _edt_triton_kernel(data)
++    import cv2
++    import numpy as np
++
++    arr = data.detach().to("cpu").numpy().astype(np.uint8)
++    out = np.stack([cv2.distanceTransform(m, cv2.DIST_L2, 0) for m in arr])
++    return torch.from_numpy(out).to(device=data.device, dtype=torch.float32)
+ 
+ 
+ def sample_box_points(
+diff --git a/sam3/model_builder.py b/sam3/model_builder.py
+index 64c6308..64cdb7e 100644
+--- a/sam3/model_builder.py
++++ b/sam3/model_builder.py
+@@ -7,6 +7,8 @@ from typing import Optional
+ 
+ import pkg_resources
+ import torch
++
++from sam3._device import default_device
+ import torch.nn as nn
+ from huggingface_hub import hf_hub_download
+ from iopath.common.file_io import g_pathmgr
+@@ -563,8 +565,8 @@ def _load_checkpoint(model, checkpoint_path):
+ 
+ def _setup_device_and_mode(model, device, eval_mode):
+     """Setup model device and evaluation mode."""
+-    if device == "cuda":
+-        model = model.cuda()
++    if device != "cpu":
++        model = model.to(device)
+     if eval_mode:
+         model.eval()
+     return model
+@@ -572,7 +574,7 @@ def _setup_device_and_mode(model, device, eval_mode):
+ 
+ def build_sam3_image_model(
+     bpe_path=None,
+-    device="cuda" if torch.cuda.is_available() else "cpu",
++    device=default_device(),
+     eval_mode=True,
+     checkpoint_path=None,
+     load_from_HF=True,
+@@ -681,7 +683,7 @@ def build_sam3_video_model(
+     geo_encoder_use_img_cross_attn: bool = True,
+     strict_state_dict_loading: bool = True,
+     apply_temporal_disambiguation: bool = True,
+-    device="cuda" if torch.cuda.is_available() else "cpu",
++    device=default_device(),
+     compile=False,
+ ) -> Sam3VideoInferenceWithInstanceInteractivity:
+     """
+@@ -942,7 +944,7 @@ def build_sam3_multiplex_video_model(
+     use_fa3: bool = False,
+     use_rope_real: bool = False,
+     strict_state_dict_loading: bool = True,
+-    device="cuda" if torch.cuda.is_available() else "cpu",
++    device=default_device(),
+     compile=False,
+ ):
+     """
+diff --git a/sam3/perflib/fused.py b/sam3/perflib/fused.py
+index 6800cca..473d032 100644
+--- a/sam3/perflib/fused.py
++++ b/sam3/perflib/fused.py
+@@ -12,6 +12,14 @@ def addmm_act(activation, linear, mat1):
+         raise ValueError("Expected grad to be disabled.")
+     self = linear.bias.detach()
+     mat2 = linear.weight.detach()
++    if mat1.device.type != "cuda":
++        # fused op is not implemented on MPS; use plain linear + activation
++        y = torch.nn.functional.linear(mat1, mat2.to(mat1.dtype), self.to(mat1.dtype))
++        if activation in [torch.nn.functional.relu, torch.nn.ReLU]:
++            return torch.nn.functional.relu(y)
++        if activation in [torch.nn.functional.gelu, torch.nn.GELU]:
++            return torch.nn.functional.gelu(y, approximate="tanh")
++        raise ValueError(f"Unexpected activation {activation}")
+     self = self.to(torch.bfloat16)
+     mat1 = mat1.to(torch.bfloat16)
+     mat2 = mat2.to(torch.bfloat16)
+diff --git a/sam3/_device.py b/sam3/_device.py
+new file mode 100644
+index 0000000..e0df3c8
+--- /dev/null
++++ b/sam3/_device.py
+@@ -0,0 +1,10 @@
++import torch
++
++
++def default_device() -> str:
++    """Best available device: cuda > mps (Apple Silicon) > cpu."""
++    if torch.cuda.is_available():
++        return "cuda"
++    if torch.backends.mps.is_available():
++        return "mps"
++    return "cpu"

@@ -1,0 +1,9 @@
+# Keypoint server + manager environment (.venv). SAM3 runs in its own environment (setup.sh).
+rtmlib==0.0.16
+onnxruntime==1.32.0
+opencv-python==5.1.0.95
+numpy==2.5.5
+pycocotools==2.0.11
+PyYAML==6.0.4
+pillow==13.0.0
+rumps==0.4.0; sys_platform == "darwin"   # menu bar app

@@ -1,0 +1,13 @@
+.venv/
+third_party/
+config.env
+__pycache__/
+*.pyc
+.DS_Store
+# never commit data or outputs
+*.png
+*.jpg
+*.jpeg
+*.zip
+workspace/
+out*/

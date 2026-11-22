@@ -1,0 +1,69 @@
+# Models that `./autolabel.sh deploy` adds to CVAT (Models page, Actions > Automatic annotation,
+# AI Tools > Interactors). Edit freely, then run `./autolabel.sh deploy` again.
+#
+# kind: sam3-detect   SAM3 finds objects by text. `labels` are the label names = text prompts
+#                     (synonyms in autolabel/vocab.py). output: box | mask | polygon.
+#                     One prompt per label: 5 labels ~1-2 s/frame, COCO-80 ~10-15 s/frame (Apple M-series).
+# kind: sam3-interact Click points / draw a box in CVAT, SAM3 returns a mask.
+# kind: keypoints     RTMW skeletons. skeleton: body17 | face68 | face13 | hand21.
+#                     auto_rotate: also try the image rotated 90/180/270 deg (sideways cameras).
+
+cvat_url: http://localhost:8080   # opened by the menu bar app
+
+servers:
+  sam3: {port: 8766}       # SAM3 model server (SAM3 Python environment)
+  keypoints: {port: 8767}  # YOLOX + RTMW server (CPU)
+
+# Docker image the Nuclio proxies are built on (Python + standard library is enough).
+base_image: autolabel.base:amd64
+
+functions:
+  - id: autolabel-sam3-boxes
+    name: "AutoLabel: SAM3 boxes (COCO-80)"
+    kind: sam3-detect
+    preset: coco
+    output: box
+
+  - id: autolabel-sam3-masks
+    name: "AutoLabel: SAM3 masks (COCO-80)"
+    kind: sam3-detect
+    preset: coco
+    output: mask
+
+  - id: autolabel-sam3-cabin
+    name: "AutoLabel: SAM3 boxes (Cabin DMS/OMS)"
+    kind: sam3-detect
+    preset: cabin
+    output: box
+
+  # Your own label set (uncomment and edit):
+  # - id: autolabel-sam3-site
+  #   name: "AutoLabel: SAM3 boxes (site safety)"
+  #   kind: sam3-detect
+  #   labels: [person, helmet, safety vest, forklift]
+  #   output: box
+
+  - id: autolabel-sam3-click
+    name: "AutoLabel: SAM3 click-to-segment"
+    kind: sam3-interact
+
+  - id: autolabel-pose
+    name: "AutoLabel: Human pose (COCO-17)"
+    kind: keypoints
+    skeleton: body17
+
+  - id: autolabel-face68
+    name: "AutoLabel: Face landmarks (68)"
+    kind: keypoints
+    skeleton: face68
+
+  - id: autolabel-face13
+    name: "AutoLabel: Face13 (Cabin, auto-rotate)"
+    kind: keypoints
+    skeleton: face13
+    auto_rotate: true
+
+  - id: autolabel-hands
+    name: "AutoLabel: Hand keypoints (21)"
+    kind: keypoints
+    skeleton: hand21
